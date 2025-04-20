@@ -13,10 +13,7 @@ library(htmlwidgets)
 
 # Установка рабочей директории
 setwd("/home/puslore/Workspace/CMS/Project")
-
-# Настройка Waterfox как браузера по умолчанию
-# Укажите правильный путь к исполняемому файлу Waterfox
-options(browser = "/usr/bin/waterfox") # Путь может отличаться, настройте под вашу систему
+options(browser = "/usr/bin/waterfox")
 
 # Загрузка данных
 data <- read.csv("./data.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
@@ -61,45 +58,56 @@ head(average_price_per_meter_location)
 
 #[станция_метро, стоимость_квартиры]
 flats_for_map <- data.frame(Metro.station = data$Metro.station, Price = data$Price)
+
 # flats_for_map
 head(flats_for_map)
 
-# Загрузка и обработка JSON с координатами станций метро
-metro_json <- fromJSON("metro_stations_data.json", simplifyDataFrame = FALSE)
-
-# Извлечение данных о станциях из всех линий метро
-metro_stations <- list()
-for (i in 1:length(metro_json$lines)) {
-  line <- metro_json$lines[[i]]  # Используем [[]] вместо $ для правильного доступа
-  for (j in 1:length(line$stations)) {
-    station <- line$stations[[j]]  # Используем [[]] для доступа к элементам списка
-    metro_stations[[length(metro_stations) + 1]] <- data.frame(
-      Metro.station = station$name,
-      lat = station$lat,
-      lng = station$lng,
-      line_name = line$name,
-      line_color = paste0("#", line$hex_color),
-      stringsAsFactors = FALSE
-    )
+# Функция для извлечения данных о станциях из JSON файла
+extract_stations <- function(file_path) {
+  json_data <- fromJSON(file_path, simplifyDataFrame = FALSE)
+  stations_list <- list()
+  for (i in 1:length(json_data$lines)) {
+    line <- json_data$lines[[i]]
+    for (j in 1:length(line$stations)) {
+      station <- line$stations[[j]]
+      stations_list[[length(stations_list) + 1]] <- data.frame(
+        Metro.station = station$name,
+        lat = station$lat,
+        lng = station$lng,
+        line_name = line$name,
+        line_color = paste0("#", line$hex_color),
+        stringsAsFactors = FALSE
+      )
+    }
   }
+  return(do.call(rbind, stations_list))
 }
 
-# Объединение всех станций в единый датафрейм
-metro_coords_df <- do.call(rbind, metro_stations)
+# Извлечение станций из обоих JSON файлов
+metro_coords_df1 <- extract_stations("metro_stations_data.json")
+metro_coords_df2 <- extract_stations("stations2.json")
 
-# Удаление дубликатов (одна станция может встречаться на нескольких линиях)
-metro_coords_df <- metro_coords_df %>%
+# Печать информации о количестве станций
+cat("Количество станций в первом файле:", nrow(metro_coords_df1), "\n")
+cat("Количество станций во втором файле:", nrow(metro_coords_df2), "\n")
+
+# Объединение данных из обоих файлов, приоритет отдается второму файлу
+metro_coords_df <- bind_rows(metro_coords_df1, metro_coords_df2) %>%
   group_by(Metro.station) %>%
-  slice(1) %>%
+  slice(n()) %>%  # Берем последнюю запись для каждой станции (из второго файла)
   ungroup()
+
+cat("Количество станций после объединения:", nrow(metro_coords_df), "\n")
 
 # Объединение данных о ценах с координатами
 map_data <- merge(average_price_per_meter_location, metro_coords_df, by = "Metro.station", all.x = TRUE)
 
+head(map_data)
+
 # Проверка наличия пропущенных координат
 missing_coords <- map_data[is.na(map_data$lat) | is.na(map_data$lng), ]
 if (nrow(missing_coords) > 0) {
-  warning(paste("Отсутствуют координаты для следующих станций:", 
+  warning(paste("Отсутствуют координаты для следующих станций:",
                 paste(missing_coords$Metro.station, collapse = ", ")))
 }
 
@@ -108,17 +116,20 @@ map_data <- map_data %>% filter(!is.na(lat) & !is.na(lng))
 
 # Создаем подписи для всплывающих окон
 labels <- sprintf(
-  "<strong>%s</strong><br/>Средняя цена за м²: %s ₽<br/>Количество квартир: %d<br/>Линия: %s",
-  map_data$Metro.station, 
-  format(round(map_data$price_per_meter), big.mark = " "), 
+  "
+  **%s**
+  Средняя цена за м²: %s ₽
+  Количество квартир: %d
+  Линия: %s",
+  map_data$Metro.station,
+  format(round(map_data$price_per_meter), big.mark = " "),
   map_data$Count,
   map_data$line_name
 ) %>% lapply(htmltools::HTML)
 
 # Определяем цветовую палитру в зависимости от цены
-# Используем функцию colorNumeric напрямую из пакета leaflet
 pal <- leaflet::colorNumeric(
-  palette = "RdYlBu", 
+  palette = "RdYlBu",
   domain = map_data$price_per_meter,
   reverse = TRUE
 )
@@ -131,10 +142,10 @@ map <- leaflet(map_data) %>%
   setView(lng = 37.62, lat = 55.75, zoom = 10) %>%
   # Добавляем круги, размер которых зависит от количества квартир
   addCircleMarkers(
-    lng = ~lng, 
+    lng = ~lng,
     lat = ~lat,
-    radius = ~sqrt(Count) * 1.5,  # Размер круга зависит от количества квартир
-    color = ~pal(price_per_meter),  # Цвет зависит от цены
+    radius = ~sqrt(Count) * 1.5, # Размер круга зависит от количества квартир
+    color = ~pal(price_per_meter), # Цвет зависит от цены
     stroke = FALSE,
     fillOpacity = 0.7,
     popup = labels,
@@ -152,32 +163,9 @@ map <- leaflet(map_data) %>%
 # Улучшаем карту добавлением дополнительных функций
 map <- map %>%
   # Добавляем собственный заголовок
-  addControl(html = "<h3>Средняя стоимость жилья возле станций метро</h3>", position = "topright") %>%
-  # Добавляем слои для переключения между разными базовыми картами
-  addProviderTiles(providers$OpenStreetMap, group = "OSM") %>%
-  addProviderTiles(providers$CartoDB.DarkMatter, group = "Dark") %>%
-  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
-  addProviderTiles(providers$CartoDB.Positron, group = "Light") %>%
-  # Добавляем контроль слоев
-  addLayersControl(
-    baseGroups = c("Light", "OSM", "Dark", "Satellite"),
-    overlayGroups = c("Станции"),
-    options = layersControlOptions(collapsed = FALSE)
-  )
+  addControl(html = "
+    <h3>Средняя стоимость квартир у станций метро в Москве</h3>
+  ", position = "topright")
 
-# Сохраняем карту как HTML-файл без автоматического открытия
-saveWidget(map, file = "moscow_property_prices.html", selfcontained = TRUE)
-
-# Выводим путь к файлу
-file_path <- file.path(getwd(), "moscow_property_prices.html")
-cat("Карта сохранена в:", file_path, "\n")
-
-# Открываем карту в Waterfox
-# Используем tryCatch для обработки возможных ошибок
-tryCatch({
-  # Явно указываем путь к браузеру Waterfox
-  browseURL(file_path, browser = getOption("browser"))
-}, error = function(e) {
-  cat("Ошибка при открытии браузера:", e$message, "\n")
-  cat("Для просмотра карты откройте файл", file_path, "в браузере Waterfox вручную\n")
-})
+# Сохраняем карту в HTML файл
+saveWidget(map, "moscow_property_prices.html", selfcontained = TRUE)
